@@ -11,6 +11,7 @@ nsepython
 # Data tools
 jugaad-data
 pandas
+yfinance
 
 # FastAPI stack
 fastapi

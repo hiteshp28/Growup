@@ -16,6 +16,7 @@ import threading
 import time
 import json
 import os
+import yfinance as yf
 # import datetime
 import logging
 import uuid
@@ -561,8 +562,46 @@ async def fetch_price(symbol):
         if symbol in price_cache:
             return price_cache[symbol]
 
-        # Live fetch
-        quote = nse.stock_quote(symbol)
+        # Convert NSE symbol to Yahoo symbol
+        yahoo_symbol = f"{symbol}.NS"
+
+        # Fetch data in a background thread
+        ticker = yf.Ticker(yahoo_symbol)
+
+        fast_info = await asyncio.to_thread(lambda: ticker.fast_info)
+
+        # Build a quote object similar to jugaad-data
+        quote = {
+            "priceInfo": {
+                "lastPrice": fast_info["lastPrice"],
+                "change": round(
+                    fast_info["lastPrice"] - fast_info["previousClose"], 2
+                ),
+                "pChange": round(
+                    (
+                        (fast_info["lastPrice"] - fast_info["previousClose"])
+                        / fast_info["previousClose"]
+                    )
+                    * 100,
+                    2,
+                ),
+                "previousClose": fast_info["previousClose"],
+                "open": fast_info["open"],
+                "close": fast_info["lastPrice"],
+                "basePrice": fast_info["previousClose"],
+                "intraDayHighLow": {
+                    "min": fast_info["dayLow"],
+                    "max": fast_info["dayHigh"],
+                    "value": fast_info["lastPrice"],
+                },
+                "weekHighLow": {
+                    "min": fast_info["yearLow"],
+                    "max": fast_info["yearHigh"],
+                    "value": fast_info["lastPrice"],
+                },
+            }
+        }
+
         data = await format_stock_data(symbol, quote)
         
         # Cache the data
@@ -760,28 +799,38 @@ async def validate_stock(symbol: str):
 
 @app.get("/api/graph-data/{symbol}")
 async def get_graph_data(symbol: str):
-    """Get graph data for a stock"""
+    """Get historical graph data for a stock"""
+
     try:
-        # This is a placeholder - you'll need to implement the actual historical data fetching
-        current_time = int(time.time() * 1000)
-        one_day_ago = current_time - (24 * 60 * 60 * 1000)
-        
-        # Get current price for reference
-        quote = nse.stock_quote(symbol.upper())
-        current_price = quote.get("priceInfo", {}).get("lastPrice", 100)
-        
-        # Generate some price movements around the current price
-        import random
+        ticker = yf.Ticker(f"{symbol.upper()}.NS")
+
+        # Last 1 day with 5-minute candles
+        history = await asyncio.to_thread(
+            lambda: ticker.history(
+                period="1d",
+                interval="5m"
+            )
+        )
+
+        if history.empty:
+            raise HTTPException(status_code=404, detail="No data found")
+
         data_points = []
-        for i in range(100):
-            timestamp = one_day_ago + (i * 14.4 * 60 * 1000)  # 14.4 minutes intervals
-            price = current_price * (0.9 + 0.2 * random.random())  # ±10% variation
-            data_points.append([timestamp, price])
-        
+
+        for timestamp, row in history.iterrows():
+            data_points.append([
+                int(timestamp.timestamp() * 1000),   # milliseconds
+                float(row["Close"])
+            ])
+
         return data_points
+
     except Exception as e:
-        logger.error(f"Error fetching graph data for {symbol}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error fetching graph data: {str(e)}")
+        logger.error(f"Error fetching graph data for {symbol}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching graph data: {e}"
+        )
 class OrderRequest(BaseModel):
     symbol: str
     quantity: int
@@ -1147,8 +1196,34 @@ async def api_market_status():
 async def api_stock_quote(symbol: str):
     """Get current stock quote"""
     try:
-        quote = nse.stock_quote(symbol.upper())
-        return quote['priceInfo']
+        ticker = yf.Ticker(symbol + ".NS")
+
+        fi = ticker.fast_info
+
+        last = fi["lastPrice"]
+        prev = fi["previousClose"]
+
+        return {
+                "lastPrice": last,
+                "change": round(last - prev, 2),
+                "pChange": round((last - prev) * 100 / prev, 2),
+                "previousClose": prev,
+                "open": fi["open"],
+                "close": last,
+                "basePrice": prev,
+
+                "intraDayHighLow": {
+                    "min": fi["dayLow"],
+                    "max": fi["dayHigh"],
+                    "value": last
+                },
+
+                "weekHighLow": {
+                    "min": fi["yearLow"],
+                    "max": fi["yearHigh"],
+                    "value": last
+                }
+        }
     except Exception as e:
         logger.error(f"Error fetching stock quote for {symbol}: {str(e)}")
         return JSONResponse(

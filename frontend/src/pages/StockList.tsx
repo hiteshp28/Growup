@@ -35,6 +35,7 @@ const StockList = () => {
         const stockDataPromises = defaultStockSymbols.map(async (symbol) => {
           const response = await fetch(`${import.meta.env.VITE_FLASK_BACKEND_URL}/api/stock-quote/${symbol}`);
           const data = await response.json();
+          console.log(data)
           return {
             symbol,
             name: data.name || symbol,
